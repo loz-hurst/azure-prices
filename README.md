@@ -18,7 +18,7 @@ The best way is to create a VirtualEnv containing the requirements for this tool
 3. Run the script:
   python3 azure-prices.py
 
-By default, the tool will display a selection of SKUs relevant to the developer's environment on STDOUT.  Try running with `--help` to see the options to modify this behaviour.
+Try running with `--help` to see the options to filter and select which properties to output.
 
 
 ## Examples
