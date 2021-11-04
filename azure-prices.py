@@ -2,11 +2,16 @@
 
 # Core libraries
 import argparse
+from collections import defaultdict
+from enum import Enum, auto
+import inspect
+import json
 import logging
+import sys
 
 # 3rd party libraries
 import requests
-
+from tabulate import tabulate
 
 logger = logging.getLogger(__name__)
 
@@ -44,61 +49,172 @@ def _do_prices_api_call(url_arguments):
 
     return json_result
 
-def get_azure_prices(skus, currency='GBP'):
+def _build_filter(filter):
+    """
+    Build a filter for the Azure API.
+
+    Args:
+        filter - dict of properties to iterable of wanted values
+
+    Returns:
+        A string containing the built filter, suitable for passing to the $filter URL parameter of the Azure price API call
+    """
+    if not filter:
+        # No restriction required, we are done.
+        return ''
+    method_log = logger.getChild('_build_filter')
+    
+    built_filter=""
+    for key, values in filter.items():
+        method_log.debug("Adding filter for %s, values %s", key, values)
+        if built_filter:
+            built_filter += " and "
+        built_filter += "(%s eq '%s')" % (key, ("' or %s eq '" % key).join(values))
+
+
+    method_log.debug("Built filter: %s", built_filter)
+    return built_filter
+
+def get_azure_prices(limit, currency='GBP'):
     """
     Call the Azure Prices API and return a dict of current prices for the give skuIds.
 
     Arguments:
-        skus - iterable yielding list of skus as strings
+        limit - dict of properties to iterable of desired values to limit the search to
         currency - a supported currency (see: https://docs.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices#supported-currencies)
                    to query the API for.  Defaults to GBP.
 
     Returns:
-        dict of skus mapped to prices
+        dict of skuIds mapped to list of found items for that skuId
     """
-    method_log = logger.getChild('call_api')
+    method_log = logger.getChild('get_azure_prices')
 
-    result = _do_prices_api_call("currencyCode='%s'&$filter=%s" % (currency, ' or '.join(["skuId eq '%s'" % x for x in skus])))
+    api_args = "currencyCode='%s'" % currency
+    filter = _build_filter(limit)
+    if filter:
+        api_args += "&$filter=%s" % filter
 
-    # Sanity check
-    if result['Count'] != len(skus):
-        method_log.warning("Azure API call did not return the same number of skus (%d) as was requested (%d)", result['Count'], len(skus))
-    print(result)
+    result_items = []
+    next_page = True
+    while next_page:
+        result = _do_prices_api_call(api_args)
+        result_items.extend(result['Items'])
+        next_page = result['NextPageLink']  # None evaluates to False
+        if next_page:
+            api_args = next_page.split('?', 1)[1]
+            method_log.debug("Next page of results detected.  URI: %s, args: %s", next_page, api_args)
 
 
-def find_azure_skus_by_armSkuName(armSkuNames):
+    method_log.info("%d items found from Azure Prices API", len(result_items))
+
+    # Transform to a skuId orientated list
+    sku_items = defaultdict(list)
+    for item in result_items:
+        sku_items[item['skuId']].append(item)
+    method_log.info("%d discrete skuIds found from Azure Prices API", len(sku_items))
+    return result_items
+
+def find_outputters():
     """
-    Find a print brief summary of Skus from the armSkuName
-
-    Arguments:
-        armSkuNames - iterable yeilding a list of armSkuNames to search for.
+    Find a list of all available output methods.
 
     Returns:
-        Nothing
+    dict of name of output method mapped to the method that implements it.
     """
-    method_log = logger.getChild('call_api')
+    result = {}
+    prefix = "output_"
 
-    method_log.debug("Calling Azure API")
-    
-    result = _do_prices_api_call("$filter=%s" % ' or '.join(["armSkuName eq '%s'" % x for x in armSkuNames]))
-    # Sanity check
-    if result['Count'] < len(armSkuNames):
-        method_log.warning("Azure API call did not return at least the number of armSkuName results (%d) as was requested (%d)", result['Count'], len(armSkuNames))
+    for potential_method in inspect.getmembers(sys.modules[__name__]):
+        if potential_method[0].startswith(prefix):
+            try:
+                method_name = potential_method[1].user_facing_name
+            except AttributeError:
+                method_name = potential_method[0][len(prefix):]
+            result[method_name] = potential_method[1]
 
-    print("skuId             type               region         armSkuName skuName")
-    for item in result['Items']:
-        print("%(skuId)-17s %(type)-18s %(armRegionName)-14s %(armSkuName)s %(skuName)s" % item)
+    return result
 
+def output_table(data, select=None):
+    """
+    Output data in a human-readable table.
+
+    Args:
+        data: dict of data to output.
+        select: optional list of keys to output (will output everything if no list provided)
+
+    Returns: nothing
+    """
+    if select:
+        output_keys = select
+    else:
+        output_keys = data.keys()
+    print(tabulate([[x[y] for y in output_keys] for x in data], headers=output_keys))
+
+def output_csv(data, select=None):
+    """
+    Output data as comma-seperated values.
+
+    Args:
+        data: dict of data to output.
+        select: optional list of keys to output (will output everything if no list provided)
+
+    Returns: nothing
+    """
+    if select:
+        output_keys = select
+    else:
+        output_keys = data.keys()
+    print('"' + '","'.join(output_keys) + '"') # Header row
+    print("\n".join(['"' + '","'.join([str(x[y]) for y in output_keys]) + '"' for x in data]))
+
+def output_tsv(data, select=None):
+    """
+    Output data as tab-seperated values.
+
+    Args:
+        data: dict of data to output.
+        select: optional list of keys to output (will output everything if no list provided)
+
+    Returns: nothing
+    """
+    if select:
+        output_keys = select
+    else:
+        output_keys = data.keys()
+    print("\t".join(output_keys)) # Header row
+    print("\n".join(["\t".join([str(x[y]) for y in output_keys]) for x in data]))
+
+def output_json(data, select=None):
+    """
+    Output data as a JSON list.
+
+    Args:
+        data: dict of data to output.
+        select: optional list of keys to output (will output everything if no list provided)
+
+    Returns: nothing
+    """
+    if select:
+        output_keys = select
+    else:
+        output_keys = data.keys()
+    print(json.dumps([{y: x[y] for y in output_keys} for x in data]))
 
 # Being run as a script?
 if __name__ == '__main__':
     log_levels = {'debug': logging.DEBUG, 'info': logging.INFO, 'warning': logging.WARNING, 'error': logging.ERROR, 'critical': logging.CRITICAL, 'none': None}
 
+    docs_url = "https://docs.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices"
+
+    outputters = find_outputters()
+
     # Process command-line options
-    parser = argparse.ArgumentParser(description='Azure price getter.')
+    parser = argparse.ArgumentParser(description='Azure price API tool.')
     parser.add_argument('--log-level', '-l', choices=log_levels.keys(), default='info', help="Logging output level (default: info)")
     parser.add_argument('--prefix', action='store_true', help="Prefix log messages with their level")
-    parser.add_argument('--find-armSkuName', action='append', help="Find a list of all matching entries by armSkuName (e.g. Standard_HC44rs) and list them")
+    parser.add_argument('--format', choices=outputters.keys(), default='table', help="Output format (defaults to table)")
+    parser.add_argument('--select', metavar='property', action='append', help="Properties to output (see %s for available options)" % docs_url)
+    parser.add_argument('--limit', nargs=2, metavar=('property', 'value'), action='append', help="Limit search by property values (repeated values for the same property will be 'OR'd together, properties will be 'AND'd) (see %s for available options)" % docs_url)
 
     args = parser.parse_args()
 
@@ -109,11 +225,12 @@ if __name__ == '__main__':
 
         logging.basicConfig(level=log_levels[args.log_level], format=fmt_prefix if args.prefix else fmt_normal)
 
-    # Search for skus, if requested
-    if args.find_armSkuName:
-        find_azure_skus_by_armSkuName(args.find_armSkuName)
+    limit_dict = defaultdict(list)
+    for (property_, value) in args.limit if args.limit else []:
+        limit_dict[property_].append(value)
 
     # Get requested prices
-    #get_azure_prices(['DZH318Z0BXNX/000G']) # HC44rs
-    get_azure_prices(['DZH318Z0BXNH/0002'])
+    outputters[args.format](get_azure_prices(limit_dict), args.select)
+
     logger.debug("Finished.")
+
