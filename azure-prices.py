@@ -100,7 +100,7 @@ def get_azure_prices(limit, currency='GBP'):
                    to query the API for.  Defaults to GBP.
 
     Returns:
-        dict of skuIds mapped to list of found items for that skuId
+       List of found items
     """
     method_log = logger.getChild('get_azure_prices')
 
@@ -119,14 +119,7 @@ def get_azure_prices(limit, currency='GBP'):
             api_args = next_page.split('?', 1)[1]
             method_log.debug("Next page of results detected.  URI: %s, args: %s", next_page, api_args)
 
-
     method_log.info("%d items found from Azure Prices API", len(result_items))
-
-    # Transform to a skuId orientated list
-    sku_items = defaultdict(list)
-    for item in result_items:
-        sku_items[item['skuId']].append(item)
-    method_log.info("%d discrete skuIds found from Azure Prices API", len(sku_items))
     return result_items
 
 def find_outputters():
@@ -162,7 +155,7 @@ def output_table(data, select=None):
     if select:
         output_keys = select
     else:
-        output_keys = data.keys()
+        output_keys = data[0].keys()
     print(tabulate([[x[y] for y in output_keys] for x in data], headers=output_keys))
 
 def output_csv(data, select=None):
@@ -178,7 +171,7 @@ def output_csv(data, select=None):
     if select:
         output_keys = select
     else:
-        output_keys = data.keys()
+        output_keys = data[0].keys()
     print('"' + '","'.join(output_keys) + '"') # Header row
     print("\n".join(['"' + '","'.join([str(x[y]) for y in output_keys]) + '"' for x in data]))
 
@@ -195,7 +188,7 @@ def output_tsv(data, select=None):
     if select:
         output_keys = select
     else:
-        output_keys = data.keys()
+        output_keys = data[0].keys()
     print("\t".join(output_keys)) # Header row
     print("\n".join(["\t".join([str(x[y]) for y in output_keys]) for x in data]))
 
@@ -212,7 +205,7 @@ def output_json(data, select=None):
     if select:
         output_keys = select
     else:
-        output_keys = data.keys()
+        output_keys = data[0].keys()
     print(json.dumps([{y: x[y] for y in output_keys} for x in data]))
 
 # Being run as a script?
